@@ -21,7 +21,7 @@ Options:
 Checks (id - what FAILs):
   C1  Test webhook URL (/webhook-test/) in code or .env.example.
   C2  An N8N_* variable with the NEXT_PUBLIC_ prefix (would be bundled for the browser).
-  C3  n8n called or N8N_WEBHOOK_* read outside lib/n8n/client.ts.
+  C3  n8n called or an n8n webhook variable (N8N_*WEBHOOK*, N8N_*URL*) read outside lib/n8n/client.ts.
   C4  lib/n8n/client.ts missing while n8n is used, or its first statement is not import "server-only".
   C5  fetch() to n8n without signal: AbortSignal.timeout(...).
   C6  N8N_* variable that is not in the contract (allowed: N8N_WEBHOOK_BASE_URL, N8N_WEBHOOK_TOKEN,
@@ -30,9 +30,11 @@ Checks (id - what FAILs):
   C8  Webhook body is not an envelope: JSON.stringify(...) of something without version/event
       (e.g. the whole database row).
   C9  Server Action ("use server" file) calls n8n outside after() - the user waits for n8n.
-  C10 Callback route (app/api/n8n/**/route.*) parses JSON before the signature check
-      (request.json(), or JSON.parse before timingSafeEqual) or does not read request.text().
-  C11 Callback route compares the signature with ===/!== or has no crypto.timingSafeEqual.
+  C10 Callback route (app/api/n8n/**, or any POST route handler that mentions n8n) parses JSON
+      before the signature check (request.json(), or JSON.parse before timingSafeEqual) or does
+      not read request.text().
+  C11 Callback route is not verified with HMAC x-n8n-signature, compares it with ===/!==, or has
+      no crypto.timingSafeEqual (helpers the route imports count).
   C12 Callback route ignores x-n8n-timestamp (replay window) or idempotency-key.
   C13 export const runtime = "edge" anywhere (node:crypto is required).
   C14 console.* in n8n-related code logs a body, secret, signature, token, FormData or a whole record.
@@ -100,17 +102,38 @@ function callSpan(text, openIdx) {
 
 const CLIENT_PATH = /^(src\/)?lib\/n8n\/client\.(ts|js|mjs)$/;
 const CALLBACK_ROUTE = /^(src\/)?app\/api\/n8n\/.*route\.(ts|js|mjs)$/;
-// process.env.N8N_WEBHOOK_X, process.env["N8N_WEBHOOK_X"], or the name as a string (env("N8N_WEBHOOK_X") helpers)
-const N8N_WEBHOOK_ENV = /process\.env(\.|\[\s*["'])N8N_WEBHOOK_\w*|["'`]N8N_WEBHOOK_\w+["'`]/;
+// An n8n webhook address / token variable under ANY name (N8N_WEBHOOK_BASE_URL, N8N_WEBHOOK_URL,
+// N8N_QUOTE_WEBHOOK_URL, N8N_URL...): process.env.X, process.env["X"], or "X" passed to an env() helper.
+const N8N_WEBHOOK_ENV = /process\.env(\.|\[\s*["'])N8N_\w*(WEBHOOK|URL)\w*|["'`]N8N_\w*(WEBHOOK|URL)\w*["'`]/;
 const usesN8nWebhook = (f) => CLIENT_PATH.test(f.path) || N8N_WEBHOOK_ENV.test(f.text) ||
   (/["'`][^"'`]*\/webhook(-test)?\/[^"'`]*["'`]/.test(f.text) && /fetch\s*\(/.test(f.text));
 const importsN8nClient = (f) => /from\s+["'](@\/|\.{1,2}\/)+(src\/)?lib\/n8n\/client["']|from\s+["'][^"']*\/n8n\/client["']/.test(f.text);
 
-/** fetch( calls that go to n8n: in files reading N8N_WEBHOOK_* / hitting /webhook/ paths. */
+/** Project files imported by f (one level): "@/x" and relative imports. */
+const byPath = new Map(code.map((f) => [f.path, f]));
+function localImports(f) {
+  const out = [];
+  for (const m of f.text.matchAll(/(?:import|export)\s[^;]*?from\s*["']([^"']+)["']/g)) {
+    let spec = m[1];
+    if (spec.startsWith("@/")) spec = spec.slice(2);
+    else if (spec.startsWith(".")) spec = relative(ROOT, resolve(ROOT, f.path, "..", spec)).split(sep).join("/");
+    else continue;
+    for (const cand of [spec, ...[".ts", ".tsx", ".js", ".mjs", "/index.ts", "/index.js"].map((e) => spec + e)]) {
+      if (byPath.has(cand)) { out.push(byPath.get(cand)); break; }
+    }
+  }
+  return out;
+}
+/** Callback routes: app/api/n8n/**, or any route handler with POST that mentions n8n / N8N_. */
+const isCallbackRoute = (f) => CALLBACK_ROUTE.test(f.path) ||
+  (/(^|\/)app\/.*route\.(ts|js|mjs)$/.test(f.path) && /export\s+(async\s+)?(function|const)\s+POST/.test(f.text) &&
+    (/n8n/i.test(f.path) || /n8n|N8N_/i.test(f.text) || localImports(f).some((g) => /N8N_/.test(g.text))));
+
+/** fetch( calls that go to n8n: in files reading an n8n webhook variable / hitting /webhook/ paths. */
 function n8nFetches() {
   const out = [];
   for (const f of code) {
-    if (!usesN8nWebhook(f) || CALLBACK_ROUTE.test(f.path)) continue;
+    if (!usesN8nWebhook(f) || isCallbackRoute(f)) continue;
     for (const m of matches(/\bfetch\s*\(/, f.text)) {
       const span = callSpan(f.text, m.index + m[0].length - 1);
       out.push({ f, line: lineOf(f.text, m.index), span });
@@ -150,7 +173,7 @@ check("C3", "n8n is called only from lib/n8n/client.ts", ({ examine, fail }) => 
   for (const f of code) {
     if (CLIENT_PATH.test(f.path)) continue;
     examine();
-    f.lines.forEach((l, i) => { if (N8N_WEBHOOK_ENV.test(l)) fail(f.path, i + 1, "N8N_WEBHOOK_* read outside lib/n8n/client.ts"); });
+    f.lines.forEach((l, i) => { if (N8N_WEBHOOK_ENV.test(l)) fail(f.path, i + 1, "n8n webhook variable read outside lib/n8n/client.ts"); });
   }
   for (const { f, line } of n8nFetches()) if (!CLIENT_PATH.test(f.path)) fail(f.path, line, "fetch() to n8n outside lib/n8n/client.ts");
 });
@@ -229,7 +252,10 @@ check("C8", "webhook body is an envelope {version, event, data}", ({ examine, fa
 check("C9", "Server Actions call n8n only inside after()", ({ examine, fail }) => {
   for (const f of code) {
     if (!/^\s*["']use server["']/m.test(f.text)) continue;
-    const imported = [...f.text.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'][^"']*n8n\/client["']/g)]
+    // names imported from lib/n8n/client or from any project module that calls n8n (e.g. lib/n8n-quote.ts)
+    const callerSpecs = new Set(localImports(f).filter((g) => usesN8nWebhook(g)).map((g) => g.path.replace(/\.(ts|tsx|js|mjs)$/, "")));
+    const imported = [...f.text.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)]
+      .filter((m) => /n8n\/client$/.test(m[2]) || [...callerSpecs].some((p) => m[2].endsWith(p.replace(/^(src\/)?/, "")) || m[2].endsWith(p.split("/").pop())))
       .flatMap((m) => m[1].split(",").map((s) => s.trim().split(/\s+as\s+/).pop()).filter(Boolean));
     const callRes = [];
     for (const name of imported) if (!/Url$|^type\s/.test(name)) callRes.push(new RegExp(`\\b${name}\\s*\\(`));
@@ -248,13 +274,15 @@ check("C9", "Server Actions call n8n only inside after()", ({ examine, fail }) =
   }
 });
 
-const routes = code.filter((f) => CALLBACK_ROUTE.test(f.path));
+const routes = code.filter(isCallbackRoute);
+// route text + helpers it imports (signature / idempotency code often lives in lib/)
+const withImports = (f) => [f.text, ...localImports(f).map((g) => g.text)].join("\n");
 
 check("C10", "callback route reads raw text and parses JSON only after the signature check", ({ examine, fail }) => {
   for (const f of routes) {
     examine();
     f.lines.forEach((l, i) => { if (/\.json\s*\(\s*\)/.test(l) && !/Response\.json|NextResponse\.json/.test(l)) fail(f.path, i + 1, "request.json() in the callback route - re-serialisation breaks the signature; use request.text()"); });
-    if (!/\.text\s*\(\s*\)/.test(f.text)) fail(f.path, 1, "callback route does not read the raw body with request.text()", true);
+    if (!/\.text\s*\(\s*\)/.test(withImports(f))) fail(f.path, 1, "callback route does not read the raw body with request.text()", true);
     const tse = f.text.search(/timingSafeEqual\s*\(/);
     for (const m of matches(/JSON\.parse\s*\(/, f.text)) {
       // a JSON.parse inside a helper defined before POST is fine only if called after verification: compare call order in POST body
@@ -270,7 +298,11 @@ check("C10", "callback route reads raw text and parses JSON only after the signa
 check("C11", "callback signature compared with crypto.timingSafeEqual, not ===", ({ examine, fail }) => {
   for (const f of routes) {
     examine();
-    if (!/timingSafeEqual\s*\(/.test(f.text)) fail(f.path, 1, "no crypto.timingSafeEqual in the callback route", true);
+    const all = withImports(f);
+    if (!/createHmac\s*\(/.test(all) || !/["']x-n8n-signature["']/i.test(all)) {
+      fail(f.path, 1, "callback is not verified with the HMAC x-n8n-signature (a shared secret / bearer token is not the contract)", true);
+    }
+    if (!/timingSafeEqual\s*\(/.test(all)) fail(f.path, 1, "no crypto.timingSafeEqual in the callback route", true);
     f.lines.forEach((l, i) => {
       if (/(sig|signature|hmac|digest|expected)\w*\s*[!=]==?|[!=]==?\s*\w*(sig|signature|hmac|digest|expected)/i.test(l) && !/length|typeof|null|undefined/.test(l)) {
         fail(f.path, i + 1, "signature compared with ===/!== - use lengths + crypto.timingSafeEqual");
@@ -282,9 +314,10 @@ check("C11", "callback signature compared with crypto.timingSafeEqual, not ===",
 check("C12", "callback route checks x-n8n-timestamp window and idempotency-key", ({ examine, fail }) => {
   for (const f of routes) {
     examine();
-    if (!/["']x-n8n-timestamp["']/i.test(f.text)) fail(f.path, 1, "x-n8n-timestamp is not checked (replay window 300 s)", true);
-    else if (!/\b300\b|MAX_SKEW|SKEW|WINDOW/i.test(f.text)) fail(f.path, lineOf(f.text, f.text.search(/x-n8n-timestamp/i)), "no 300 s time window found for x-n8n-timestamp");
-    if (!/["']idempotency-key["']/i.test(f.text)) fail(f.path, 1, "idempotency-key is not used - n8n retries will be applied twice", true);
+    const all = withImports(f);
+    if (!/["']x-n8n-timestamp["']/i.test(all)) fail(f.path, 1, "x-n8n-timestamp is not checked (replay window 300 s)", true);
+    else if (!/\b300\b|MAX_SKEW|SKEW|WINDOW/i.test(all)) fail(f.path, 1, "no 300 s time window found for x-n8n-timestamp", true);
+    if (!/["']idempotency-key["']/i.test(all)) fail(f.path, 1, "idempotency-key is not used - n8n retries will be applied twice", true);
   }
 });
 
@@ -296,7 +329,7 @@ check("C13", 'no export const runtime = "edge"', ({ examine, fail }) => {
 });
 
 check("C14", "no bodies, secrets or personal data in logs of n8n code", ({ examine, fail }) => {
-  const n8nFiles = code.filter((f) => usesN8nWebhook(f) || importsN8nClient(f) || CLIENT_PATH.test(f.path) || CALLBACK_ROUTE.test(f.path) || /N8N_CALLBACK_SECRET/.test(f.text));
+  const n8nFiles = code.filter((f) => usesN8nWebhook(f) || importsN8nClient(f) || isCallbackRoute(f) || /N8N_\w*SECRET/.test(f.text));
   const BAD = /\b(raw|rawBody|body|payload|envelope|formData|email|phone|fullName|token|secret|signature|headers|lead|quote|record|req|request|data|error|err|e)\b/;
   for (const f of n8nFiles) {
     for (const m of matches(/\bconsole\.(log|info|warn|error|debug)\s*\(/, f.text)) {
