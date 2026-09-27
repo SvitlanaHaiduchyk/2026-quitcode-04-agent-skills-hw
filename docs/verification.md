@@ -144,7 +144,11 @@
 - SHA коміту зі скілом (BASE для Task D): **`fdff42b`** (`fdff42b6cee541b3347a559a24188d3f5d7f0653`) —
   «skills: add integrating-n8n-webhooks (contract, references, scripts)». У ньому — виправлення Task A,
   три скіли й форма нотаток з Task B; `/quotes` і переробленого виклику n8n ще немає.
-- Що скіл змінив у собі після прогонів (коміти й чому): <заповнюється після Task D>
+- Що скіл змінив у собі після прогонів (коміти й чому): `8ebc86e` — `check-contract.mjs` бачив n8n-код лише під
+  «контрактними» іменами (`N8N_WEBHOOK_*`, `app/api/n8n/**`); прогін A (`N8N_QUOTE_WEBHOOK_URL`, `lib/n8n-quote.ts`,
+  `app/api/quotes/[id]/callback`) отримав від нього `10 PASS / 1 FAIL` за код, якого скрипт не бачив. Тепер — будь-які
+  n8n-змінні, POST-роути, що згадують n8n, імпортовані хелпери; C11 вимагає HMAC. A: `5 PASS / 9 FAIL`, B: 14/14,
+  `main`: 9 FAIL. `SKILL.md` і `references/` не змінювались. Деталі — `docs/ab-validation.md`.
 
 **Знахідка з розділу 0 («журнал мока й повідомлення форми не сходяться»)**, відтворено на коді гілки
 (`.env.example` → `N8N_WEBHOOK_URL=…/webhook-test/lead-created`, мок без `--listen`): форма показала
@@ -239,7 +243,24 @@ C8 вважав `JSON.stringify(lead)` конвертом (у `rawPayload` лі�
 **`check-contract.mjs` на фінальному коді** (після перенесення прогону B — 0 FAIL):
 
 ```
-<заповнюється після Task D>
+check-contract: C:Course6-quitcode-04-agent-skills-hw
+C1   PASS no test webhook URL (/webhook-test/) in code or .env.example
+C2   PASS no NEXT_PUBLIC_ prefix on N8N_* variables
+C3   PASS n8n is called only from lib/n8n/client.ts
+C4   PASS lib/n8n/client.ts exists and starts with import "server-only"
+C5   PASS every fetch() to n8n has signal: AbortSignal.timeout(...)
+C6   PASS only contract N8N_* variables
+C7   PASS fetch() to n8n sends x-n8n-token and idempotency-key
+C8   PASS webhook body is an envelope {version, event, data}
+C9   PASS Server Actions call n8n only inside after()
+C10  PASS callback route reads raw text and parses JSON only after the signature check
+C11  PASS callback signature compared with crypto.timingSafeEqual, not ===
+C12  PASS callback route checks x-n8n-timestamp window and idempotency-key
+C13  PASS no export const runtime = "edge"
+C14  PASS no bodies, secrets or personal data in logs of n8n code
+
+14 checks: 14 PASS, 0 FAIL, 0 N/A
+exit=0
 ```
 
 **Додатково:** матриця колбеків (`send-signed-callback.mjs`) на шаблонному колбек-роуті з
