@@ -1,8 +1,11 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { db } from "@/lib/db";
+import { callN8nWebhook } from "@/lib/n8n/client";
 import { logAudit } from "@/lib/audit";
 import { parseLeadForm, type LeadFormField } from "@/lib/lead-form";
 import type { LeadStatus } from "@/lib/types";
@@ -50,15 +53,23 @@ export async function submitLead(
     },
   });
 
-  try {
-    await fetch(process.env.N8N_WEBHOOK_URL!, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(lead),
-    });
-  } catch (error) {
-    console.error(`Failed to send lead ${lead.id} to n8n`, error);
-  }
+  // "lead-created" is an FYI event (webhook responds Immediately): the user does not wait for n8n.
+  after(async () => {
+    try {
+      await callN8nWebhook(
+        {
+          version: 1,
+          event: "lead-created",
+          // Minimum for the workflow; no IP, user agent, contact details or raw form data.
+          data: { leadId: lead.id, company: lead.company, source: lead.source, budget: lead.budget },
+        },
+        { idempotencyKey: randomUUID(), correlationId: randomUUID() },
+      );
+    } catch (error) {
+      const errorName = error instanceof Error ? error.name : "unknown";
+      console.error(`n8n.out event=lead-created lead=${lead.id} error=${errorName}`);
+    }
+  });
 
   await logAudit("lead.created", lead.id);
 
