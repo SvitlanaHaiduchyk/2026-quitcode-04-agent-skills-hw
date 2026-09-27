@@ -13,7 +13,7 @@ description: >-
   клієнтів, інтеграції з n8n (для контракту вебхука — окремий скіл).
 metadata:
   owner: studio-nova-web
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Клієнтська форма + Server Action
@@ -49,9 +49,10 @@ metadata:
    рендер форми лише на захищеній сторінці — не межа безпеки):
    ```ts
    "use server";
-   export async function addNote(leadId: string, _prev: NoteFormState, formData: FormData): Promise<NoteFormState> {
+   export async function addNote(_prev: NoteFormState, formData: FormData): Promise<NoteFormState> {
      const user = await getSessionUser();               // сесія: немає → { status: "error", message: "Увійдіть знову" } або redirect("/login")
-     const lead = await db.getLead(leadId);
+     const leadId = formData.get("leadId");             // id ресурсу — з прихованого поля, недовірений
+     const lead = typeof leadId === "string" ? await db.getLead(leadId) : null;
      if (!lead || lead.workspaceId !== user.workspaceId) // права: ресурс належить робочому простору користувача
        return { status: "error", message: "Немає доступу" };
      const parsed = parseNoteForm(formData);            // валідація на сервері, завжди
@@ -62,7 +63,7 @@ metadata:
      return { status: "ok" };
    }
    ```
-   - Аргументи з клієнта (`leadId`, прив'язані через `.bind`) — теж недовірені: перевіряй права на них.
+   - Id ресурсу (`leadId`) приходить з клієнта — він недовірений, права перевіряй саме на нього.
    - Парсер обрізає й обмежує довжину (`trim().slice(0, max)`), перевіряє enum-и за списком
      (`BUDGET_OPTIONS.some(...)`), повідомлення помилок — українською, по одному на поле.
    - Не довіряй `hidden`-полям з ідентифікаторами робочого простору чи ролі — бери їх із сесії.
@@ -74,10 +75,14 @@ metadata:
 
 4. **Клієнтський компонент — `useActionState`, форма працює без JS:**
    ```tsx
-   const [state, formAction, pending] = useActionState(addNote.bind(null, leadId), { status: "idle" });
-   <form action={formAction} noValidate> … <button type="submit" disabled={pending}>…</button></form>
+   const [state, formAction, pending] = useActionState(addNote, { status: "idle" });
+   <form action={formAction} noValidate>
+     <input type="hidden" name="leadId" value={leadId} /> … <button type="submit" disabled={pending}>…</button></form>
    ```
    - `action={formAction}` на `<form>` (не `onSubmit` + `fetch`) — так форма відправляється й без JS.
+   - **Не** `useActionState(action.bind(null, id), …)`: у Next.js 16.3.5 / React 19.2 відправка такої
+     форми без JS (прихований `$ACTION_1:1` з прив'язаним аргументом) заганяє сервер у 100% CPU —
+     зависає цей запит і всі наступні. Id ресурсу — прихованим полем, як вище.
    - Кнопка — `type="submit"`; стан очікування — з `pending`, текст «Зберігаємо…».
    - Жодного `useEffect` для реакції на результат, жодного `useState`, що дублює поле.
 
@@ -129,7 +134,8 @@ metadata:
 - [ ] Порожня відправка: під кожним обов'язковим полем — текст помилки, поле має `aria-invalid="true"`,
       є блок `role="alert"`; інше введене не зникло.
 - [ ] Без JS (DevTools → Command Menu → «Disable JavaScript», перезавантажити): форма відправляється,
-      помилки й успіх показуються після повного перезавантаження сторінки.
+      помилки й успіх показуються після повного перезавантаження сторінки, а сервер і далі відповідає
+      на інші запити (не завис).
 - [ ] Дія без сесії: у вікні інкогніто / без cookie `leaddesk_session` повтор POST (DevTools → Network →
       «Copy as cURL» без cookie) не змінює даних і повертає помилку / редирект на `/login`.
 - [ ] Журнал `npm start` / `npm run dev` після відправки: немає email, телефону, імені, тексту повідомлення
