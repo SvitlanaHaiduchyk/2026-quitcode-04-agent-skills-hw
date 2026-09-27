@@ -11,7 +11,7 @@ export default async function LeadPage({ params }: PageProps<"/dashboard/leads/[
   const { id } = await params;
   const user = await getCurrentUser();
   const [workspace, lead] = await Promise.all([
-    getWorkspace({ slug: user.workspaceSlug }),
+    getWorkspace(user.workspaceSlug),
     getLead(id),
   ]);
 

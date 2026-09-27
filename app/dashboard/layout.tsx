@@ -4,7 +4,7 @@ import { getCurrentUser, getWorkspace } from "@/lib/data";
 
 export default async function DashboardLayout({ children }: LayoutProps<"/dashboard">) {
   const user = await getCurrentUser();
-  const workspace = await getWorkspace({ slug: user.workspaceSlug });
+  const workspace = await getWorkspace(user.workspaceSlug);
 
   return (
     <div className="flex min-h-screen">

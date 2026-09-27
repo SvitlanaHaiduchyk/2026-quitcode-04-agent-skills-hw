@@ -3,7 +3,7 @@ import { getCurrentUser, getWorkspace } from "@/lib/data";
 
 export async function DashboardHeader() {
   const user = await getCurrentUser();
-  const workspace = await getWorkspace({ slug: user.workspaceSlug });
+  const workspace = await getWorkspace(user.workspaceSlug);
 
   return (
     <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3">
