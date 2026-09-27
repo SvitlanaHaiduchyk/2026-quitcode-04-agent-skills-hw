@@ -76,7 +76,10 @@ Next.js 16.3.5, React 19.2. Звіряли з `node_modules/next/dist/docs/`.
 
 | Порада скіла (id) | Що каже скіл | Що каже документація нашої версії | Висновок |
 |---|---|---|---|
-| _заповнюється після кроку 5_ | | | |
+| `async-parallel` | незалежні `await` підряд — водоспад; запускати разом через `Promise.all()` | `01-getting-started/06-fetching-data.md` → «Parallel data fetching»: layout і page рендеряться паралельно, але «within any component» послідовні `await` блокують один одного; приклад — ініціювати запити, потім `Promise.all` | **Правдиво, застосовано** у `app/dashboard/page.tsx`: TTFB 2,30 → 1,48 с |
+| `server-cache-react` | `React.cache()` для дедуплікації в межах запиту; ключ порівнюється через `Object.is`, тож inline-об'єкт в аргументі ніколи не дає cache hit | `02-guides/caching-without-cache-components.md` → «Deduplicating requests»: якщо дані йдуть не через `fetch`, а з БД напряму — обгорнути доступ у React `cache` «to deduplicate requests within a single render pass». `'use cache'` потребує `cacheComponents`, якого в нашому `next.config.ts` немає, — тож саме `React.cache` | **Правдиво, застосовано**: `getWorkspace({ slug })` → `getWorkspace(slug)`, `getCurrentUser` у `cache()`; `db:getUserBySession`/`db:getWorkspace` 3 → 1 за запит. TTFB не змінився — layout, header і page і так чекали паралельно |
+| `server-serialization` | через межу RSC серіалізуються всі поля об'єкта; передавати в Client Component лише ті, що він використовує | `02-guides/data-security.md`: data access layer має повертати «safe, minimal Data Transfer Objects», «only return the data relevant for this query and not everything» | **Правдиво, застосовано** до `LeadsTable`: HTML 424 592 → 111 377 Б; `internalNotes`/`rawPayload`/`ipAddress` більше не доходять до браузера |
+| `bundle-barrel-imports` | імпортувати напряму або додати пакети в `experimental.optimizePackageImports` | `03-api-reference/05-config/01-next-config-js/optimizePackageImports.md`: `recharts` і `lodash-es` **вже** в списку, що оптимізується за замовчуванням; `lodash` (CommonJS) — ні | **Для нашої версії здебільшого не потрібно**: додавати `recharts` у конфіг — зайве. Для `lodash` доречніше прямий імпорт `lodash/debounce`, а не конфіг. Не застосовували |
 
 ## 6. Закріплення версії й коміт
 
