@@ -98,3 +98,26 @@ export type AuditEntry = {
   leadId: string;
   at: string;
 };
+
+export const QUOTE_STATUSES = ["queued", "sent", "ready", "failed"] as const;
+
+export type QuoteStatus = (typeof QUOTE_STATUSES)[number];
+
+export type Quote = {
+  id: string;
+  company: string;
+  email: string;
+  description: string;
+  budget: number | null;
+  status: QuoteStatus;
+  // Created once per request and reused on every retry to n8n.
+  idempotencyKey: string;
+  correlationId: string;
+  jobId: string | null;
+  documentUrl: string | null;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NewQuote = Pick<Quote, "company" | "email" | "description" | "budget">;

@@ -5,10 +5,13 @@ import type {
   LeadStats,
   LeadStatus,
   NewLead,
+  NewQuote,
+  Quote,
   SourceCount,
   User,
   Workspace,
 } from "./types";
+import { randomUUID } from "node:crypto";
 import { LEAD_SOURCES, LEAD_STATUSES } from "./types";
 
 // In-memory stand-in for the agency's Postgres. Latencies mirror what the
@@ -36,6 +39,11 @@ const LATENCY_MS = {
   insertAuditEntry: 250,
   listUsers: 50,
   createSession: 50,
+  insertQuote: 120,
+  getQuote: 80,
+  updateQuote: 80,
+  claimIdempotencyKey: 20,
+  releaseIdempotencyKey: 20,
 } as const;
 
 type QueryName = keyof typeof LATENCY_MS;
@@ -269,6 +277,12 @@ function createStore(): Store {
 const globalForStore = globalThis as unknown as { leadDeskStore?: Store };
 const store = (globalForStore.leadDeskStore ??= createStore());
 
+// Quotes live next to the lead store; kept separate so an already running dev
+// server picks them up without a restart.
+type QuoteStore = { quotes: Quote[]; callbackKeys: Set<string> };
+const globalForQuotes = globalThis as unknown as { leadDeskQuotes?: QuoteStore };
+const quoteStore = (globalForQuotes.leadDeskQuotes ??= { quotes: [], callbackKeys: new Set() });
+
 const SESSION_PREFIX = "demo-";
 
 export const db = {
@@ -393,6 +407,70 @@ ${note}` : note;
   insertAuditEntry(entry: AuditEntry) {
     return query("insertAuditEntry", () => {
       store.audit.push(entry);
+    });
+  },
+
+  insertQuote(input: NewQuote) {
+    return query("insertQuote", (): Quote => {
+      const now = new Date().toISOString();
+      const quote: Quote = {
+        ...input,
+        // The status page is public, so the id must not be guessable.
+        id: `q_${randomUUID()}`,
+        status: "queued",
+        idempotencyKey: randomUUID(),
+        correlationId: randomUUID(),
+        jobId: null,
+        documentUrl: null,
+        errorCode: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      quoteStore.quotes.push(quote);
+      return structuredClone(quote);
+    });
+  },
+
+  getQuote(id: string) {
+    return query("getQuote", () => {
+      const quote = quoteStore.quotes.find((q) => q.id === id);
+      return quote ? structuredClone(quote) : null;
+    });
+  },
+
+  // Find by the key we sent to n8n, or by the job id from its 202 response.
+  updateQuote(
+    match: { id?: string; idempotencyKey?: string; jobId?: string },
+    patch: Partial<Pick<Quote, "status" | "jobId" | "documentUrl" | "errorCode">>,
+  ) {
+    return query("updateQuote", () => {
+      const quote = quoteStore.quotes.find(
+        (q) =>
+          (match.id !== undefined && q.id === match.id) ||
+          (match.idempotencyKey !== undefined && q.idempotencyKey === match.idempotencyKey) ||
+          (match.jobId !== undefined && q.jobId === match.jobId),
+      );
+      if (!quote) return null;
+      // A callback may arrive before the 202 bookkeeping: never downgrade a finished quote.
+      if (patch.status === "sent" && (quote.status === "ready" || quote.status === "failed")) {
+        delete patch.status;
+      }
+      Object.assign(quote, patch, { updatedAt: new Date().toISOString() });
+      return structuredClone(quote);
+    });
+  },
+
+  claimIdempotencyKey(key: string) {
+    return query("claimIdempotencyKey", () => {
+      if (quoteStore.callbackKeys.has(key)) return false;
+      quoteStore.callbackKeys.add(key);
+      return true;
+    });
+  },
+
+  releaseIdempotencyKey(key: string) {
+    return query("releaseIdempotencyKey", () => {
+      quoteStore.callbackKeys.delete(key);
     });
   },
 };
