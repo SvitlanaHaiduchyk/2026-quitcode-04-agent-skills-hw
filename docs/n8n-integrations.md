@@ -3,6 +3,13 @@
 | event | напрям | шлях n8n | режим | власник |
 |---|---|---|---|---|
 | `quote-request` | Next.js → n8n → колбек | `/webhook/quote-request` | Respond to Webhook 202 + колбек | TODO: вказати відповідального |
+| `lead-created` | Next.js → n8n | `/webhook/lead-created` | Immediately (подія «до відома») | TODO: вказати відповідального |
+
+## `lead-created`
+
+Публічна форма ліда (`/`) → Server Action `submitLead` (`app/actions.ts`) → `POST /webhook/lead-created` в `after()`.
+Тіло: `{ version: 1, event: "lead-created", data: { leadId, company, source, budget } }` — без контактів, IP, user agent
+і сирих даних форми. Колбеку немає; відповідь n8n (`200`) лише журналюється.
 
 ## `quote-request`
 
